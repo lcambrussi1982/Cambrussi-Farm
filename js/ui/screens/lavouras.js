@@ -1,199 +1,142 @@
-// Tela de Lavouras — unificada e melhorada (auto-spray padrão + upgrade T10 com preço)
-// Depende: UI, GameState, CROPS, Fields, Land, Silos, Economy, Machines, CF_CONSTANTS, Bus
 (function(){
-  // ---- Helpers ----
-  function ensureAutoDefaults(p){
-    p.auto = p.auto || { enabled:false, crop:'milho', replant:false, autoSpray:true };
-    if (typeof p.auto.autoSpray === 'undefined') p.auto.autoSpray = true; // marcado por padrão
-    if (!p.sizeLevel) p.sizeLevel = 1;
+  // ================== Mapa da Fazenda — v20 Upgrade ==================
+  // Objetivo:
+  // - Aumentar o tamanho dos quadradinhos (tiles) com controle de tamanho
+  // - Mostrar no CENTRO de cada talhão um ícone/imagem indicando o estado:
+  //     • recém plantado  • em crescimento  • perto da colheita  • pronto p/ colher
+  // - Não quebra código existente; injeta seção "Mapa" dentro da rota Terras/Lavouras
+  // Requisitos: GameState, UI, Bus, Router, (opcional) CROPS, Land
+
+  // ================== Estilos ==================
+  (function ensureStyle(){
+    const ID='cf-map-style-v20'; if(document.getElementById(ID)) return;
+    const st=document.createElement('style'); st.id=ID; st.textContent=`
+      .farm-map{ --tile: 84px; --cols: 8; --gap: 8px; }
+      .farm-map .toolbar{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+      .farm-map-grid{ display:grid; grid-template-columns: repeat(var(--cols), var(--tile)); gap: var(--gap); align-items:center; justify-content:flex-start; }
+      .farm-plot{ position:relative; width: var(--tile); height: var(--tile); border-radius: 10px; overflow:hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+      .farm-plot .soil{ position:absolute; inset:0; background: linear-gradient(180deg, #6b4f2a 0%, #5a4426 100%); }
+      .farm-plot .center-icon{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size: calc(var(--tile) * .55); filter: drop-shadow(0 1px 0 rgba(0,0,0,.25)); pointer-events:none; }
+      .farm-plot .badge{ position:absolute; bottom:4px; right:4px; font-size:12px; line-height:1; padding:3px 6px; border-radius:999px; background:rgba(0,0,0,.35); color:#fff; }
+      .farm-plot.empty .soil{ background: repeating-linear-gradient(45deg, #70512d, #70512d 10px, #664a2a 10px, #664a2a 20px); opacity:.9; }
+      .farm-plot.just   { outline: 2px solid rgba(34,197,94,.45); }
+      .farm-plot.mid    { outline: 2px solid rgba(59,130,246,.35); }
+      .farm-plot.near   { outline: 2px solid rgba(234,179,8,.55); }
+      .farm-plot.ready  { outline: 2px solid rgba(16,185,129,.65); }
+    `; document.head.appendChild(st);
+  })();
+
+  // ================== Utilitários ==================
+  const S = {
+    get(){ return (typeof GameState!=='undefined' && GameState.get)? GameState.get() : {}; },
+    setTileSize(px){ localStorage.setItem('cf_map_tile', String(px)); },
+    getTileSize(){ return Number(localStorage.getItem('cf_map_tile')||'96'); },
+    setCols(n){ localStorage.setItem('cf_map_cols', String(n)); },
+    getCols(defaultCols){ return Number(localStorage.getItem('cf_map_cols')||defaultCols||8); }
+  };
+
+  // Heurística para obter lista de talhões do state (genérica p/ diferentes versões)
+  function getPlots(state){
+    // Prioridades comuns
+    if(state.fields && Array.isArray(state.fields.list)) return state.fields.list;               // {crop, plantedDay, size, status}
+    if(state.lands && Array.isArray(state.lands.plots))  return state.lands.plots;               // {cropId, plantedAt, size}
+    if(Array.isArray(state.terras)) return state.terras;                                         // genérico
+    if(typeof Land!=='undefined' && Land.getAll) return Land.getAll(state);                      // fallback API
+    return []; // desconhecido
   }
-  function plotClass(p){
-    let cls='plot';
-    if(p.ready) cls+=' ready';
-    if(!p.owned) cls+=' locked';
-    if(p.pest) cls+=' pest';
-    if(p.owned && p.crop && p.water<0.35) cls+=' dry';
-    return cls;
-  }
-  function getInsectQty(s){
-    if (s?.inventory && typeof s.inventory['inseticida']==='number') return s.inventory['inseticida'];
-    if (s?.items && typeof s.items['inseticida']==='number') return s.items['inseticida'];
-    if (window.Inventory && typeof Inventory.get==='function'){
-      const q = Inventory.get('inseticida'); if(typeof q==='number') return q;
-    }
-    return 0;
+
+  // Dados de crescimento (genérico). Usa CROPS[cropId].daysToHarvest se existir.
+  function cropDaysToHarvest(cropId){
+    try{ const c = (typeof CROPS!=='undefined' && CROPS[cropId])? CROPS[cropId] : null; return c?.daysToHarvest || c?.growDays || 10; }catch(e){ return 10; }
   }
 
-  // ---- Render raiz ----
-  function render(){
-    const s = GameState.get();
-    const root = document.createElement('div'); root.className='fieldwrap';
+  // Dias desde plantio (heurística para vários formatos)
+  function daysSincePlanted(plot, state){
+    const dayNow = state?.time?.day || 1;
+    const planted = plot.plantedDay || plot.plantedAt || plot.day || plot.start || null;
+    if(typeof planted==='number') return Math.max(0, (dayNow - planted));
+    // alguns estados guardam progresso direto
+    if(typeof plot.growthDays==='number') return Math.max(0, plot.growthDays);
+    return 0; // desconhecido
+  }
 
-    // GRID
-    const gridCard = UI.section('Talhões');
-    const grid = document.createElement('div'); grid.className='fieldgrid';
+  function stageOf(plot, state){
+    if(!plot || !plot.crop && !plot.cropId) return {key:'empty', icon:'', badge:'Livre'};
+    const crop = (plot.crop||plot.cropId||'').toString();
+    const total = cropDaysToHarvest(crop);
+    const ds = daysSincePlanted(plot, state);
+    const remaining = Math.max(0, total - ds);
+    if(ds<=2) return {key:'just',  icon:'\uD83C\uDF31', badge:'Plantada'};       // 🌱
+    if(remaining<=0) return {key:'ready', icon:'\u2705', badge:'Colher'};         // ✅
+    if(remaining<=2) return {key:'near',  icon:'\uD83C\uDF3E', badge:'Perto'};   // 🌾
+    return {key:'mid', icon:'\uD83C\uDF33', badge:'Crescendo'};                  // 🌳
+  }
 
-    s.map.forEach((p,i)=>{
-      ensureAutoDefaults(p);
-      const cell = document.createElement('div'); cell.className = plotClass(p);
-      const img = document.createElement('img');
-      img.src = p.crop ? `assets/crops/${p.crop}_stage${p.stage}.svg` : `assets/crops/empty.svg`;
-      img.alt = p.crop ? `${p.crop} estágio ${p.stage}` : 'Vazio';
-      const lbl = document.createElement('div'); lbl.className='lbl'; lbl.textContent = `T${p.sizeLevel}`;
-      cell.append(img,lbl);
+  // ================== Render do Mapa ==================
+  function renderMap(){
+    const s = S.get();
+    const root = document.createElement('div'); root.className='farm-map';
 
-      cell.title = p.owned
-        ? (p.crop ? `${p.crop} • dia ${p.days}/${CROPS[p.crop].days}` : 'Vazio')
-        : `Bloqueado — R$ ${Economy.format(p.price)}`;
-      cell.onclick = ()=> openPanel(i);
-      grid.appendChild(cell);
+    // Toolbar (tamanho e colunas)
+    const tb = document.createElement('div'); tb.className='toolbar';
+    const lbl1=document.createElement('label'); lbl1.textContent='Tamanho do tile:';
+    const range=document.createElement('input'); range.type='range'; range.min='64'; range.max='160'; range.step='4'; range.value=String(S.getTileSize());
+    range.oninput = ()=>{ root.style.setProperty('--tile', range.value+'px'); S.setTileSize(Number(range.value)); };
+    const lbl2=document.createElement('label'); lbl2.textContent='Colunas:';
+    const colsInp=document.createElement('input'); colsInp.type='number'; colsInp.min='4'; colsInp.max='20'; colsInp.value=String(S.getCols()); colsInp.style.width='72px';
+    colsInp.onchange = ()=>{ grid.style.setProperty('--cols', String(Math.max(4, Math.min(20, parseInt(colsInp.value||'8'))))); S.setCols(parseInt(colsInp.value||'8')); };
+    tb.append(lbl1, range, lbl2, colsInp);
+
+    // Grid
+    const grid = document.createElement('div'); grid.className='farm-map-grid';
+    grid.style.setProperty('--tile', S.getTileSize()+'px');
+    grid.style.setProperty('--cols', S.getCols(getDefaultCols()) );
+
+    // Plots
+    const plots = getPlots(s);
+    plots.forEach((p, idx)=>{
+      const tile=document.createElement('div'); tile.className='farm-plot';
+      const soil=document.createElement('div'); soil.className='soil'; tile.appendChild(soil);
+
+      const st=stageOf(p, s); tile.classList.add(st.key);
+      const center=document.createElement('div'); center.className='center-icon';
+
+      // Se houver imagens configuradas, usa; senão usa emojis como padrão
+      const imgMap = (s?.ui?.mapStageImages) || (window.CF_CONSTANTS?.CROP_STAGE_IMAGES) || null;
+      if(imgMap && imgMap[st.key]){
+        const im=document.createElement('img'); im.src=imgMap[st.key]; im.alt=st.key; im.style.maxWidth='80%'; im.style.maxHeight='80%'; im.style.objectFit='contain'; center.appendChild(im);
+      }else{
+        center.textContent = st.icon; // emoji fallback
+      }
+
+      const badge=document.createElement('div'); badge.className='badge'; badge.textContent=st.badge;
+      tile.append(center, badge);
+
+      // Title/tooltip informativo
+      const cropName = (p.cropName||p.crop||p.cropId||'vazio');
+      tile.title = `${cropName}\nDias desde plantio: ${daysSincePlanted(p,s)}\nEstágio: ${st.badge}`;
+
+      grid.appendChild(tile);
     });
-    gridCard.appendChild(grid);
 
-    // SIDE PANEL
-    const panel = UI.section('Ações / Auto-plant'); panel.classList.add('sidepanel');
-    const wrap = document.createElement('div'); wrap.className='list'; wrap.id='panel-fields';
-    wrap.innerHTML = `<div class="small">
-      Talhões em cinza precisam ser comprados. Custos variam com <b>Máquinas</b> e <b>Dificuldade</b>.
-      Use <b>inseticida</b> para remover pragas. O <b>Auto-pulverizar</b> vem habilitado por padrão.
-    </div>`;
-    panel.appendChild(wrap);
-
-    root.append(gridCard, panel);
+    root.append(tb, grid);
     return root;
   }
 
-  // ---- Painel por talhão ----
-  function openPanel(i){
-    const s = GameState.get(); const p = s.map[i];
-    ensureAutoDefaults(p);
-    const w = document.getElementById('panel-fields'); if(!w) return;
-    w.innerHTML = '';
-
-    // Não comprado
-    if(!p.owned){
-      const card = document.createElement('div'); card.className='list';
-      card.innerHTML = `
-        <div class="kv"><span>Talhão</span><b>(${p.x+1},${p.y+1})</b></div>
-        <div class="kv"><span>Preço</span><b>R$ ${Economy.format(p.price)}</b></div>`;
-      const buy = document.createElement('button'); buy.textContent='Comprar talhão';
-      buy.onclick=()=>Land.buy(i);
-      card.appendChild(buy); w.appendChild(card); return;
-    }
-
-    // AÇÕES
-    const row1 = document.createElement('div'); row1.className='row';
-
-    const cropSel = document.createElement('select'); cropSel.className='input';
-    Object.values(CROPS).forEach(c=>{
-      const o=document.createElement('option'); o.value=c.id; o.textContent=c.id; cropSel.appendChild(o);
-    });
-    cropSel.value = p.auto.crop || 'milho';
-
-    const bPlant = document.createElement('button');
-    bPlant.textContent=`Plantar (R$ ${Economy.format(Machines.opCost('plant'))})`;
-    bPlant.onclick=()=>Fields.plant(i, cropSel.value);
-
-    const bIrr = document.createElement('button');
-    bIrr.textContent=`Irrigar (~R$ ${Economy.format(Machines.opCost('spray')*0.5)})`;
-    bIrr.onclick=()=>Fields.irrigate(i);
-
-    const bFert = document.createElement('button');
-    bFert.textContent=`Adubar (R$ ${Economy.format(Machines.opCost('spray'))})`;
-    bFert.onclick=()=>Fields.fertilize(i);
-
-    const bHarv = document.createElement('button');
-    bHarv.textContent=`Colher (R$ ${Economy.format(Machines.opCost('harvest'))})`;
-    bHarv.onclick=()=>Fields.harvest(i);
-
-    row1.append(cropSel,bPlant,bIrr,bFert,bHarv);
-
-    // Inseticida (manual) — aparece apenas se houver pragas
-    if(p.pest){
-      const bInsect = document.createElement('button');
-      const op = Machines.opCost('spray');
-      bInsect.textContent = `Aplicar Inseticida (1x) (R$ ${Economy.format(op)} + estoque/emerg.)`;
-      bInsect.onclick = ()=> Fields.applyInsecticide(i);
-      row1.appendChild(bInsect);
-    }
-
-    // AUTOMAÇÃO
-    const row2 = document.createElement('div'); row2.className='row';
-
-    const autoCheck = document.createElement('input'); autoCheck.type='checkbox'; autoCheck.checked = !!p.auto.enabled;
-    const autoLbl = document.createElement('label'); autoLbl.className='small'; autoLbl.textContent='Auto-plant';
-
-    const replCheck = document.createElement('input'); replCheck.type='checkbox'; replCheck.checked = !!p.auto.replant;
-    const replLbl = document.createElement('label'); replLbl.className='small'; replLbl.textContent='Auto-replant';
-
-    const sprayCheck = document.createElement('input'); sprayCheck.type='checkbox'; sprayCheck.checked = !!p.auto.autoSpray;
-    const sprayLbl = document.createElement('label'); sprayLbl.className='small'; sprayLbl.textContent='Auto-pulverizar (pragas)';
-
-    const supportsAutoSpray = (typeof Fields.setAuto==='function' && Fields.setAuto.length >= 5);
-
-    function persistAuto(){
-      if(supportsAutoSpray){
-        Fields.setAuto(i, autoCheck.checked, cropSel.value, replCheck.checked, sprayCheck.checked);
-      }else{
-        const st = GameState.get();
-        const pf = st.map[i]; pf.auto = pf.auto || {};
-        pf.auto.enabled = !!autoCheck.checked;
-        pf.auto.crop = cropSel.value;
-        pf.auto.replant = !!replCheck.checked;
-        pf.auto.autoSpray = !!sprayCheck.checked;
-        GameState.save(st); Bus.emit('fields', st.map);
-      }
-    }
-
-    autoCheck.onchange = persistAuto;
-    replCheck.onchange = persistAuto;
-    sprayCheck.onchange = persistAuto;
-    cropSel.onchange = persistAuto;
-
-    // Upgrade até T10 com preço
-    const maxLvl = (CF_CONSTANTS.MAX_PLOT_LEVEL || 10);
-    const nextLvl = Math.min(maxLvl, (p.sizeLevel||1)+1);
-    const upg = document.createElement('button');
-    if((p.sizeLevel||1) < maxLvl){
-      const price = (typeof Land.upgradeCost==='function') ? Land.upgradeCost(i) : 0;
-      upg.textContent = `Upgrade tamanho (T${p.sizeLevel}→T${nextLvl}) — R$ ${Economy.format(price)}`;
-      upg.onclick = ()=>Land.upgrade(i);
-    }else{
-      upg.textContent = `Tamanho máximo (T${p.sizeLevel})`;
-      upg.disabled = true;
-    }
-
-    row2.append(autoCheck,autoLbl,replCheck,replLbl,sprayCheck,sprayLbl,upg);
-
-    // INFO
-    const info = document.createElement('div'); info.className='list';
-    const invTotal = Object.values(s.inventory||{}).reduce((a,b)=>a+(b||0),0);
-    const cap = Silos.totalCapacity(s);
-    const insetQt = getInsectQty(s);
-    const text = p.crop
-      ? `<div class="kv"><span>Estado</span><b>${p.crop} • estágio ${p.stage}/${CROPS[p.crop].stages-1}</b></div>
-         <div class="kv"><span>Água</span><b>${(p.water*100|0)}%</b></div>
-         <div class="kv"><span>Fertilidade</span><b>${(p.fert*100|0)}%</b></div>
-         <div class="kv"><span>Pragas</span><b>${p.pest?'Sim':'Não'}</b></div>`
-      : `<div class="kv"><span>Estado</span><b>Vazio</b></div>`;
-
-    info.innerHTML = `
-      <div class="kv"><span>Tamanho</span><b>T${p.sizeLevel}</b></div>
-      <div class="kv"><span>Armazenagem</span><b>${invTotal}/${cap}</b></div>
-      <div class="kv"><span>Inseticida (estoque)</span><b>${insetQt} frasco(s)</b></div>
-      ${text}
-    `;
-
-    const container = document.createElement('div'); container.className='list';
-    container.appendChild(row1); container.appendChild(row2); container.appendChild(info);
-    w.append(container);
+  function getDefaultCols(){
+    const s = S.get(); const count = getPlots(s).length || 16; // quadrado aproximado
+    return Math.max(6, Math.round(Math.sqrt(count)));
   }
 
-  // ---- Montagem e eventos ----
-  Bus.on('route',     tab=>{ if(tab==='lavouras') UI.mount(render()); });
-  Bus.on('fields',    ()=>{ if(Router.get()==='lavouras') UI.mount(render()); });
-  Bus.on('land',      ()=>{ if(Router.get()==='lavouras') UI.mount(render()); });
-  Bus.on('cap',       ()=>{ if(Router.get()==='lavouras') UI.mount(render()); });
-  Bus.on('machines',  ()=>{ if(Router.get()==='lavouras') UI.mount(render()); });
-  Bus.on('inventory', ()=>{ if(Router.get()==='lavouras') UI.mount(render()); });
+  // ================== Integração com a UI ==================
+  function mount(){
+    const section = UI.section('Mapa da Fazenda');
+    section.appendChild(renderMap());
+    return section;
+  }
+
+  // Exibe o mapa dentro das rotas "terras" e "lavouras" (sem criar rota nova)
+  Bus.on('route', (tab)=>{ if(tab==='terras' || tab==='lavouras'){ const c = mount(); UI.mount(c); } });
+  // Atualiza mapa quando houver avanço de tempo/metrics
+  Bus.on('metrics', ()=>{ if(Router.get()==='terras' || Router.get()==='lavouras'){ const c = mount(); UI.mount(c); } });
 })();
