@@ -35,3 +35,6 @@
 
   Bus.on('start', render);
 })();
+
+// v20 badge (não intrusivo)
+try{ Bus.on('route', (tab)=>{ if(tab==='start'){ const b=document.querySelector('.version-pill'); if(!b){ const v=document.createElement('div'); v.className='version-pill'; v.textContent='v'+(CF_CONSTANTS.VERSION||'20.0.0'); v.style.cssText='position:fixed;right:12px;bottom:12px;padding:6px 10px;border-radius:12px;background:#1118;color:#fff;font-size:12px;opacity:.8;backdrop-filter:blur(6px)'; document.body.appendChild(v);} } }); }catch(e){}
