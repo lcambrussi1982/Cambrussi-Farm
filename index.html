@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cambrussi Farm — v19 PRO (Hotfix)</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="start-overlay" class="overlay hidden"></div>
+  <header class="topbar">
+    <h1>Cambrussi Farm <small>v19 PRO</small></h1>
+    <div class="balance">
+      <span>Dinheiro: R$ <b id="ui-money">0,00</b></span>
+      <span>Talhões: <b id="ui-owned">0</b>/<b id="ui-total">0</b></span>
+      <span>Capacidade: <b id="ui-cap">0</b></span>
+      <span>Impostos: R$ <b id="ui-tax">0,00</b></span>
+      <span>Dívida: R$ <b id="ui-debt">0,00</b></span>
+      <div class="speed">
+        <label class="small">Velocidade:</label>
+        <select id="speed" class="input speed-input">
+          <option value="0">Pausa</option>
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+          <option value="8">8x</option>
+        </select>
+      </div>
+      <button id="btn-save" class="ghost">Salvar</button>
+      <button id="btn-reset" class="danger">Resetar</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="dashboard" class="active">Painel</button>
+    <button data-tab="lavouras">Lavouras</button>
+    <button data-tab="terras">Terras</button>
+    <button data-tab="silos">Silos</button>
+    <button data-tab="maquinas">Máquinas</button>
+    <button data-tab="loja">Loja</button>
+    <button data-tab="banco">Banco</button>
+    <button data-tab="clima">Clima</button>
+    <button data-tab="relatorios">Relatórios</button>
+    <button data-tab="config">Config</button>
+  </nav>
+
+  <main id="view"></main>
+
+  <footer class="statusbar">
+    <span id="ui-day">Dia 1</span>
+    <span id="ui-clock">00:00</span>
+    <span id="ui-weather">—</span>
+    <span id="ui-status">Pronto.</span>
+  </footer>
+
+  <!-- Data + Core -->
+  <script src="js/data/constants.js"></script>
+  <script src="js/data/crops.js"></script>
+  <script src="js/core/events.js"></script>
+  <script src="js/core/storage.js"></script>
+  <script src="js/core/router.js"></script>
+  <script src="js/state/gameState.js"></script>
+
+  <!-- Systems -->
+  <script src="js/systems/economy.js"></script>
+  <script src="js/systems/inventory.js"></script>
+  <script src="js/systems/market.js"></script>
+  <script src="js/systems/shop.js"></script>
+  <script src="js/systems/weather.js"></script>
+  <script src="js/systems/land.js"></script>
+  <script src="js/systems/silos.js"></script>
+  <script src="js/systems/machines.js"></script>
+  <script src="js/systems/bank.js"></script>
+  <script src="js/systems/tax.js"></script>
+  <script src="js/systems/fields.js"></script>
+
+  <!-- UI -->
+  <script src="js/ui/render.js"></script>
+  <script src="js/ui/screens/start.js"></script>
+  <script src="js/ui/screens/dashboard.js"></script>
+  <script src="js/ui/screens/lavouras.js"></script>
+  <script src="js/ui/screens/terras.js"></script>
+  <script src="js/ui/screens/silos.js"></script>
+  <script src="js/ui/screens/maquinas.js"></script>
+  <script src="js/ui/screens/loja.js"></script>
+  <script src="js/ui/screens/banco.js"></script>
+  <script src="js/ui/screens/clima.js"></script>
+  <script src="js/ui/screens/relatorios.js"></script>
+  <script src="js/ui/screens/config.js"></script>
+
+  <!-- Bootstrap -->
+  <script src="js/main.js"></script>
+</body>
+</html>
